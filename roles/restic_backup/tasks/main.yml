@@ -22,4 +22,8 @@
     state: started
 
 - import_tasks: 30-root-and-host-overrides.yml
+
+- name: Flush handlers before verify (ensure daemon-reload runs first)
+  meta: flush_handlers
+
 - import_tasks: 99-verify.yml
