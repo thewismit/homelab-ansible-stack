@@ -8,7 +8,7 @@ Type=oneshot
 
 # Base env (no User/Group here; overrides are handled by drop-ins)
 EnvironmentFile={{ restic_env_file | default('/root/.restic/restic.env') }}
-Environment=RESTIC_REPOSITORY=/mnt/synology/restic
+Environment=RESTIC_REPOSITORY={{ restic_repo_path }}
 Environment=RESTIC_HOST=%H
 Environment="RESTIC_EXCLUDES=--exclude=/proc --exclude=/sys --exclude=/dev --exclude=/run --exclude=/mnt/synology --exclude=/tmp --exclude=/lost+found"
 
