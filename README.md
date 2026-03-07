@@ -1,6 +1,6 @@
 # Homelab Ansible Stack
 
-[![CI](https://github.com/thewismit/homelab-ansible-stack/actions/workflows/ci.yml/badge.svg)](https://github.com/thewismit/homelab-ansible-stack/actions/workflows/ci.yml)
+[![CI](https://github.com/opscairn/homelab-ansible-stack/actions/workflows/ci.yml/badge.svg)](https://github.com/opscairn/homelab-ansible-stack/actions/workflows/ci.yml)
 
 > **Production-grade Ansible automation for self-hosted homelabs.**
 > Backups, monitoring, logging, and self-healing infrastructure — battle-tested, running 24/7.
@@ -97,7 +97,7 @@ Prometheus ──alerts──▶ Alertmanager ──webhook──▶ Remediation
 
 ```bash
 # 1. Clone and configure
-git clone https://github.com/thewismit/homelab-ansible-stack ansible-homelab && cd ansible-homelab
+git clone https://github.com/opscairn/homelab-ansible-stack ansible-homelab && cd ansible-homelab
 cp ansible.cfg.example ansible.cfg         # set your SSH key + ansible user paths
 cp inventory.yml.example inventory.yml     # fill in your host IPs
 cp group_vars/all/vault.yml.example group_vars/all/vault.yml

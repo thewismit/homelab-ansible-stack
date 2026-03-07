@@ -24,7 +24,7 @@ ntfy_host_ip: "x.x.x.x"                  # ntfy notification server
 loki_url: "http://{{ docker_host_ip }}:3100"
 ntfy_url: "http://{{ ntfy_host_ip }}:8081"
 gitea_base_url: "https://gitea.{{ homelab_domain }}"
-project_repo_url: "https://github.com/thewismit/homelab-ansible-stack"
+project_repo_url: "https://github.com/opscairn/homelab-ansible-stack"
 
 # ── Restic ────────────────────────────────────────────────────────────────────
 # restic_sftp_repo: used by deploy-restic-fleet.yml (SFTP transport to PBS/NAS)
