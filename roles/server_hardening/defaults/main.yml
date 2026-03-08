@@ -89,6 +89,7 @@ hardening_sysctl_params:
   fs.protected_symlinks: 1
 
 # ── NTP ──────────────────────────────────────────────────────────────────────
+hardening_ntp_enabled: true
 hardening_ntp_service: "systemd-timesyncd"  # or "chrony"
 
 # ── Systemd ──────────────────────────────────────────────────────────────────

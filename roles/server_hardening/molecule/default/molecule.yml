@@ -27,6 +27,8 @@ provisioner:
           - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyForMolecule molecule@test"
         hardening_ufw_enabled: false       # UFW needs kernel modules unavailable in Docker
         hardening_fail2ban_enabled: false   # No systemd journal backend in container
+        hardening_ntp_enabled: false       # No timesyncd/chrony in Docker
+        hardening_unattended_upgrades_enabled: false  # No systemd services in Docker
 
 verifier:
   name: ansible

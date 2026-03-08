@@ -4,17 +4,23 @@
     name: systemd-timesyncd
     enabled: true
     state: started
-  when: hardening_ntp_service == "systemd-timesyncd"
+  when:
+    - hardening_ntp_enabled
+    - hardening_ntp_service == "systemd-timesyncd"
 
 - name: NTP | Install chrony
   ansible.builtin.apt:
     name: chrony
     state: present
-  when: hardening_ntp_service == "chrony"
+  when:
+    - hardening_ntp_enabled
+    - hardening_ntp_service == "chrony"
 
 - name: NTP | Enable chrony
   ansible.builtin.systemd:
     name: chrony
     enabled: true
     state: started
-  when: hardening_ntp_service == "chrony"
+  when:
+    - hardening_ntp_enabled
+    - hardening_ntp_service == "chrony"

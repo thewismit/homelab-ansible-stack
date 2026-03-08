@@ -89,21 +89,25 @@
       ansible.builtin.stat:
         path: /etc/apt/apt.conf.d/50unattended-upgrades
       register: uu_file
+      when: hardening_unattended_upgrades_enabled | default(true)
 
     - name: VERIFY | Assert unattended upgrades
       ansible.builtin.assert:
         that:
           - uu_file.stat.exists
+      when: hardening_unattended_upgrades_enabled | default(true)
 
     - name: VERIFY | Auto-upgrades configured
       ansible.builtin.stat:
         path: /etc/apt/apt.conf.d/20auto-upgrades
       register: au_file
+      when: hardening_unattended_upgrades_enabled | default(true)
 
     - name: VERIFY | Assert auto-upgrades
       ansible.builtin.assert:
         that:
           - au_file.stat.exists
+      when: hardening_unattended_upgrades_enabled | default(true)
 
     - name: VERIFY | Journal size configured
       ansible.builtin.command: grep -c "SystemMaxUse=500M" /etc/systemd/journald.conf
