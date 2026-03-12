@@ -6,6 +6,34 @@ Format: `## vX.Y.Z — YYYY-MM-DD`
 
 ---
 
+## v2.0.0 — 2026-03-12
+
+Major expansion: alert rules, fleet patching, and full remediation coverage.
+
+### Added
+
+**Alert rules**
+- `playbooks/deploy-alert-rules.yml` — deploy 23 Prometheus alert rules
+- `templates/alert-rules.yml.j2` — parameterized alert rules across 7 categories
+- Alert threshold variables in `group_vars/all/vars.yml`
+
+**Fleet patching**
+- `playbooks/fleet-patch.yml` — 5-stage safe patching pipeline (audit, snapshot, patch, smoke, rollback)
+- `playbooks/vars/fleet-patch-vars.yml.example` — host VMID mapping and smoke test template
+
+**Remediation playbooks**
+- `remediation/host-recovery.yml` — Proxmox VM/LXC auto-recovery for `HostDown` alerts
+- `remediation/remount-nfs.yml` — NFS mount recovery for `NFSMountUnavailable` alerts
+
+### Changed
+
+- Remediation bridge map expanded: 4 → 17 alert-to-playbook mappings
+- Added `label_vars` and `extra_vars` support to remediation mappings
+- Added `strategy: defer_to_timer` for alerts that shouldn't auto-retry (e.g. `ResticBackupFailed`)
+- README updated with alert rules, fleet patching, and expanded remediation docs
+
+---
+
 ## v1.0.0 — 2026-02-28
 
 Initial public release.

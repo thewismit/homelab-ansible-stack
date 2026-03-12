@@ -1,0 +1,44 @@
+---
+# Remediation: remount NFS shares on a host
+# Called by remediation-bridge with -e "target_host=<host>"
+
+- name: REMEDIATION | Remount NFS on {{ target_host | default('undefined') }}
+  hosts: "{{ target_host }}"
+  become: true
+
+  vars:
+    nfs_server_ip: "{{ synology_ip }}"
+    nfs_port: 2049
+
+  tasks:
+
+    - name: PRE-FLIGHT | Require target_host
+      ansible.builtin.assert:
+        that: target_host is defined and target_host != ''
+        fail_msg: "target_host must be set"
+
+    - name: PRE-FLIGHT | Check NFS server reachability
+      ansible.builtin.wait_for:
+        host: "{{ nfs_server_ip }}"
+        port: "{{ nfs_port }}"
+        timeout: 15
+      register: nfs_check
+      failed_when: false
+
+    - name: PRE-FLIGHT | Fail if NFS server unreachable
+      ansible.builtin.fail:
+        msg: "NFS server ({{ nfs_server_ip }}:{{ nfs_port }}) is unreachable — cannot remount"
+      when: nfs_check is failed
+
+    - name: REMEDIATE | Remount all fstab entries
+      ansible.builtin.command: mount -a
+      changed_when: true
+
+    - name: VALIDATE | Check NFS mounts
+      ansible.builtin.command: df -h
+      register: df_output
+      changed_when: false
+
+    - name: VALIDATE | Report NFS mounts
+      ansible.builtin.debug:
+        msg: "{{ df_output.stdout_lines | select('search', 'nfs\\|synology') | list }}"

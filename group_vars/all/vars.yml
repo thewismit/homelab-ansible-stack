@@ -77,3 +77,31 @@ restic_exclude_paths:
 # ── Remediation bridge ────────────────────────────────────────────────────────
 ntfy_topic: "homelab-alerts"
 bridge_dir: "/opt/remediation-bridge"
+
+# ── Alert thresholds (override per host in host_vars if needed) ─────────────
+# Used by templates/alert-rules.yml.j2
+disk_warning_threshold_pct: 20
+disk_critical_threshold_pct: 10
+memory_threshold_pct: 90
+swap_threshold_ratio: 0.8
+load_avg_threshold: 2.0
+disk_io_threshold: 0.9
+tls_warning_days: 14
+tls_critical_days: 7
+restic_stale_threshold_seconds: 129600  # 36 hours
+container_down_threshold_seconds: 300   # 5 minutes
+
+# Prometheus job names (match your prometheus.yml scrape config)
+node_exporter_job: "node_exporter_fleet"
+http_probe_job: "http_uptime"
+dns_probe_job: "dns_probe"
+https_probe_job: "blackbox-https"
+
+# NFS mount pattern for NFSMountUnavailable alert
+nfs_mount_pattern: "/mnt/synology.*"
+
+# Systemd services to monitor for EnabledServiceInactive alert
+monitored_services_regex: "promtail.service|restic-backup.timer"
+
+# ── Fleet patching ──────────────────────────────────────────────────────────
+# Used by playbooks/fleet-patch.yml (vars file: playbooks/vars/fleet-patch-vars.yml)

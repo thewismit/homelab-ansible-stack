@@ -1,0 +1,72 @@
+---
+# Deploy Prometheus alert rules to the monitoring host.
+# Copies alert rule files from template, reloads Prometheus.
+# Run: ansible-playbook playbooks/deploy-alert-rules.yml --check --limit docker-host
+# Run: ansible-playbook playbooks/deploy-alert-rules.yml --limit docker-host
+
+- name: Alert Rules | Deploy Prometheus alert rules
+  hosts: docker-host
+  become: true
+  vars:
+    prometheus_config_dir: "{{ synology_docker_mount }}/prometheus_config"
+    prometheus_rules_dir: "{{ prometheus_config_dir }}/rules"
+    prometheus_url: "http://localhost:9090"
+
+  tasks:
+
+    - name: PRE-FLIGHT | Confirm Prometheus is running
+      tags: [deploy]
+      ansible.builtin.uri:
+        url: "{{ prometheus_url }}/-/healthy"
+        status_code: 200
+        timeout: 10
+      register: prom_check
+      failed_when: prom_check.status != 200
+      when: not ansible_check_mode
+
+    - name: INSTALL | Create rules directory
+      tags: [deploy]
+      ansible.builtin.file:
+        path: "{{ prometheus_rules_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: CONFIG | Deploy alert rules
+      tags: [deploy, configure]
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../templates/alert-rules.yml.j2"
+        dest: "{{ prometheus_rules_dir }}/{{ item }}"
+        mode: "0644"
+      loop:
+        - backup_alerts.yml
+        - container_alerts.yml
+        - host_alerts.yml
+        - infrastructure_alerts.yml
+        - network_alerts.yml
+        - service_alerts.yml
+        - tls_alerts.yml
+      notify: Reload Prometheus
+
+    - name: VALIDATE | Check Prometheus config
+      tags: [deploy, validate]
+      ansible.builtin.uri:
+        url: "{{ prometheus_url }}/-/healthy"
+        status_code: 200
+        timeout: 10
+      register: prom_post
+      when: not ansible_check_mode
+
+    - name: VALIDATE | Report
+      tags: [deploy, validate]
+      ansible.builtin.debug:
+        msg: "Alert rules deployed to {{ prometheus_rules_dir }}. Prometheus {{ 'healthy' if prom_post.status | default(0) == 200 else 'needs check' }}."
+      when: not ansible_check_mode
+
+  handlers:
+    - name: Reload Prometheus
+      ansible.builtin.uri:
+        url: "{{ prometheus_url }}/-/reload"
+        method: POST
+        status_code: [200, 204]
+        timeout: 10
+      when: not ansible_check_mode

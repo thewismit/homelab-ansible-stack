@@ -1,0 +1,57 @@
+---
+# Remediation: attempt to recover an unresponsive VM/LXC via Proxmox
+# Called by remediation-bridge with -e "target_host=<host>"
+
+- name: REMEDIATION | Recover {{ target_host | default('undefined') }} via Proxmox
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    # Override in group_vars or pass via -e
+    # Map each hostname to its Proxmox VMID, type (qemu/lxc), and PVE node IP
+    host_vmid_map: "{{ host_recovery_map | default({}) }}"
+
+    # Map hostname to IP for SSH validation
+    host_ip_map: "{{ host_ip_lookup | default({}) }}"
+
+    ssh_key: "{{ ansible_ssh_private_key_file | default(lookup('env', 'HOME') + '/.ssh/id_ed25519') }}"
+
+  tasks:
+
+    - name: PRE-FLIGHT | Require target_host
+      ansible.builtin.assert:
+        that: target_host is defined and target_host != ''
+        fail_msg: "target_host must be set"
+
+    - name: PRE-FLIGHT | Lookup VM/LXC info
+      ansible.builtin.set_fact:
+        vm_info: "{{ host_vmid_map[target_host] | default({}) }}"
+        host_ip: "{{ host_ip_map[target_host] | default('') }}"
+
+    - name: PRE-FLIGHT | Fail if host not in map
+      ansible.builtin.fail:
+        msg: "Host {{ target_host }} not found in host_vmid_map — cannot auto-recover"
+      when: vm_info == {} or host_ip == ''
+
+    - name: REMEDIATE | Start VM/LXC via Proxmox SSH
+      ansible.builtin.command:
+        cmd: >
+          ssh -i {{ ssh_key }}
+          -o BatchMode=yes -o ConnectTimeout=10
+          root@{{ vm_info.pve_node }}
+          "pvesh create /nodes/$(hostname)/{{ vm_info.type }}/{{ vm_info.vmid }}/status/start 2>/dev/null || echo 'already running'"
+      register: start_result
+      changed_when: "'already running' not in start_result.stdout"
+
+    - name: VALIDATE | Wait for SSH on recovered host
+      ansible.builtin.wait_for:
+        host: "{{ host_ip }}"
+        port: 22
+        timeout: 120
+        delay: 10
+      register: ssh_wait
+
+    - name: VALIDATE | Report
+      ansible.builtin.debug:
+        msg: "{{ target_host }} (VMID {{ vm_info.vmid }}) recovery: SSH on {{ host_ip }} is {{ 'up' if ssh_wait is success else 'still down' }}"

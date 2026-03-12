@@ -57,7 +57,7 @@ route:
   # Optionally limit to specific alert groups:
   routes:
     - match_re:
-        alertname: "ContainerDown|DiskSpaceHigh|SystemdServiceFailed|TLSCertExpiringSoon"
+        alertname: "DiskSpaceWarning|DiskSpaceCritical|HighMemoryUsage|TLSCertExpiringSoon|TLSCertExpiringCritical|TLSCertExpired|ContainerDown|SystemdServiceFailed|ContainerOOM|NFSMountUnavailable|ResticBackupFailed|ResticBackupStale|DNSResolutionFailed|SystemdTimerFailed|HostDown|TLSHandshakeFailed|EnabledServiceInactive"
       receiver: remediation-bridge
 ```
 
@@ -81,10 +81,34 @@ mappings:
 
 | Alert | Playbook | Cooldown |
 |-------|---------|---------|
-| `ContainerDown` | `remediation/restart-container.yml` | 10 min |
-| `DiskSpaceHigh` | `remediation/cleanup-disk.yml` | 60 min |
-| `SystemdServiceFailed` | `remediation/service-restart.yml` | 15 min |
+| `DiskSpaceWarning` | `remediation/cleanup-disk.yml` | 60 min |
+| `DiskSpaceCritical` | `remediation/cleanup-disk.yml` | 30 min |
+| `HighMemoryUsage` | `remediation/service-restart.yml` | 30 min |
 | `TLSCertExpiringSoon` | `remediation/caddy-reload.yml` | 360 min |
+| `TLSCertExpiringCritical` | `remediation/caddy-reload.yml` | 120 min |
+| `TLSCertExpired` | `remediation/caddy-reload.yml` | 60 min |
+| `ContainerDown` | `remediation/restart-container.yml` | 10 min |
+| `SystemdServiceFailed` | `remediation/service-restart.yml` | 15 min |
+| `ContainerOOM` | `remediation/restart-container.yml` | 15 min |
+| `NFSMountUnavailable` | `remediation/remount-nfs.yml` | 30 min |
+| `ResticBackupFailed` | *(defer to timer)* | 60 min |
+| `ResticBackupStale` | `remediation/service-restart.yml` | 120 min |
+| `DNSResolutionFailed` | `remediation/service-restart.yml` | 30 min |
+| `SystemdTimerFailed` | `remediation/service-restart.yml` | 30 min |
+| `HostDown` | `remediation/host-recovery.yml` | 30 min |
+| `TLSHandshakeFailed` | `remediation/caddy-reload.yml` | 120 min |
+| `EnabledServiceInactive` | `remediation/service-restart.yml` | 30 min |
+
+## Remediation playbooks
+
+| Playbook | Purpose |
+|----------|---------|
+| `remediation/restart-container.yml` | Restart a Docker container by name |
+| `remediation/cleanup-disk.yml` | Free disk space (journals, tmp, apt cache) |
+| `remediation/service-restart.yml` | Restart a systemd service or timer |
+| `remediation/caddy-reload.yml` | Reload Caddy to pick up renewed TLS certs |
+| `remediation/host-recovery.yml` | Start a VM/LXC via Proxmox API when host is unreachable |
+| `remediation/remount-nfs.yml` | Remount NFS shares from fstab |
 
 ## Cooldown behavior
 

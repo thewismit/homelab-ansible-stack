@@ -1,0 +1,245 @@
+{% raw %}
+{# Alert rules template — rendered per rule group file.
+   Thresholds are parameterized via group_vars with sensible defaults. #}
+{% if item == 'backup_alerts.yml' %}
+groups:
+  - name: backup_health
+    rules:
+      - alert: ResticBackupStale
+        expr: (time() - node_systemd_timer_last_trigger_seconds{name="restic-backup.timer"}) > {{ restic_stale_threshold_seconds | default(129600) }}
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Restic backup stale on {{ '{{' }} $labels.instance {{ '}}' }}"
+          description: "restic-backup.timer on {{ '{{' }} $labels.instance {{ '}}' }} has not triggered in over 36 hours."
+
+      - alert: ResticBackupFailed
+        expr: node_systemd_unit_state{name="restic-backup.service", state="failed"} == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Restic backup failed on {{ '{{' }} $labels.instance {{ '}}' }}"
+          description: "restic-backup.service on {{ '{{' }} $labels.instance {{ '}}' }} is in failed state."
+
+{% elif item == 'container_alerts.yml' %}
+groups:
+  - name: container_health
+    rules:
+      - alert: ContainerDown
+        expr: time() - container_last_seen{name!=""} > {{ container_down_threshold_seconds | default(300) }}
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Container {{ '{{' }} $labels.name {{ '}}' }} is down"
+          description: "Container {{ '{{' }} $labels.name {{ '}}' }} on {{ '{{' }} $labels.instance {{ '}}' }} has not been seen for over 5 minutes."
+
+      - alert: ContainerOOM
+        expr: increase(container_oom_events_total{name!=""}[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Container {{ '{{' }} $labels.name {{ '}}' }} OOM killed"
+          description: "Container {{ '{{' }} $labels.name {{ '}}' }} on {{ '{{' }} $labels.instance {{ '}}' }} has experienced an OOM event."
+
+      - alert: ContainerRestartLoop
+        expr: increase(container_start_time_seconds{name!=""}[15m]) > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ '{{' }} $labels.name {{ '}}' }} restart loop"
+          description: "Container {{ '{{' }} $labels.name {{ '}}' }} on {{ '{{' }} $labels.instance {{ '}}' }} has restarted more than 3 times in 15 minutes."
+
+{% elif item == 'host_alerts.yml' %}
+groups:
+  - name: host_health
+    rules:
+      - alert: HostDown
+        expr: up{job="{{ node_exporter_job | default('node_exporter_fleet') }}"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Host is down"
+          description: "{{ '{{' }} $labels.instance {{ '}}' }} has been unreachable for more than 5 minutes."
+
+      - alert: DiskSpaceWarning
+        expr: >
+          (node_filesystem_avail_bytes{job="{{ node_exporter_job | default('node_exporter_fleet') }}",fstype!~"tmpfs|overlay",mountpoint="/"} /
+           node_filesystem_size_bytes{job="{{ node_exporter_job | default('node_exporter_fleet') }}",fstype!~"tmpfs|overlay",mountpoint="/"}) * 100 < {{ disk_warning_threshold_pct | default(20) }}
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low disk space"
+          description: "{{ '{{' }} $labels.instance {{ '}}' }} root filesystem is {{ '{{' }} printf \"%.0f\" $value {{ '}}' }}% free (below {{ disk_warning_threshold_pct | default(20) }}% threshold)."
+
+      - alert: DiskSpaceCritical
+        expr: >
+          (node_filesystem_avail_bytes{job="{{ node_exporter_job | default('node_exporter_fleet') }}",fstype!~"tmpfs|overlay",mountpoint="/"} /
+           node_filesystem_size_bytes{job="{{ node_exporter_job | default('node_exporter_fleet') }}",fstype!~"tmpfs|overlay",mountpoint="/"}) * 100 < {{ disk_critical_threshold_pct | default(10) }}
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical disk space"
+          description: "{{ '{{' }} $labels.instance {{ '}}' }} root filesystem is {{ '{{' }} printf \"%.0f\" $value {{ '}}' }}% free (below {{ disk_critical_threshold_pct | default(10) }}% threshold). Immediate action required."
+
+      - alert: HighMemoryUsage
+        expr: >
+          (1 - (node_memory_MemAvailable_bytes{job="{{ node_exporter_job | default('node_exporter_fleet') }}"} /
+                node_memory_MemTotal_bytes{job="{{ node_exporter_job | default('node_exporter_fleet') }}"})) * 100 > {{ memory_threshold_pct | default(90) }}
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage"
+          description: "{{ '{{' }} $labels.instance {{ '}}' }} memory usage is {{ '{{' }} printf \"%.0f\" $value {{ '}}' }}% (above {{ memory_threshold_pct | default(90) }}% threshold)."
+
+      - alert: EnabledServiceInactive
+        expr: node_systemd_unit_state{state="inactive", name=~"{{ monitored_services_regex | default('promtail.service|restic-backup.timer') }}"} == 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Expected service not running"
+          description: "{{ '{{' }} $labels.name {{ '}}' }} on {{ '{{' }} $labels.instance {{ '}}' }} is enabled but inactive for 15+ minutes."
+
+{% elif item == 'infrastructure_alerts.yml' %}
+groups:
+  - name: infrastructure_health
+    rules:
+      - alert: NFSMountUnavailable
+        expr: node_filesystem_size_bytes{mountpoint=~"{{ nfs_mount_pattern | default('/mnt/synology.*') }}"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "NFS mount unavailable on {{ '{{' }} $labels.instance {{ '}}' }}"
+          description: "{{ '{{' }} $labels.mountpoint {{ '}}' }} on {{ '{{' }} $labels.instance {{ '}}' }} reports zero size — mount may have dropped."
+
+      - alert: HighSwapUsage
+        expr: ((node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes) / node_memory_SwapTotal_bytes) > {{ swap_threshold_ratio | default(0.8) }} and node_memory_SwapTotal_bytes > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High swap usage on {{ '{{' }} $labels.instance {{ '}}' }}"
+          description: "Swap usage on {{ '{{' }} $labels.instance {{ '}}' }} exceeds {{ (swap_threshold_ratio | default(0.8) * 100) | int }}%."
+
+      - alert: HighLoadAverage
+        expr: node_load5 / count without(cpu) (node_cpu_seconds_total{mode="idle"}) > {{ load_avg_threshold | default(2.0) }}
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High load average on {{ '{{' }} $labels.instance {{ '}}' }}"
+          description: "5-minute load average on {{ '{{' }} $labels.instance {{ '}}' }} exceeds {{ load_avg_threshold | default(2.0) }}x CPU count."
+
+      - alert: HighDiskIOWait
+        expr: rate(node_disk_io_time_seconds_total[5m]) > {{ disk_io_threshold | default(0.9) }}
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High disk I/O wait on {{ '{{' }} $labels.instance {{ '}}' }}"
+          description: "Disk {{ '{{' }} $labels.device {{ '}}' }} on {{ '{{' }} $labels.instance {{ '}}' }} is saturated (>90% IO time)."
+
+{% elif item == 'network_alerts.yml' %}
+groups:
+  - name: network_health
+    rules:
+      - alert: HTTPEndpointDown
+        expr: probe_success{job="{{ http_probe_job | default('http_uptime') }}"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "HTTP endpoint down: {{ '{{' }} $labels.instance {{ '}}' }}"
+          description: "{{ '{{' }} $labels.instance {{ '}}' }} has been unreachable for over 5 minutes."
+
+      - alert: DNSResolutionFailed
+        expr: probe_success{job="{{ dns_probe_job | default('dns_probe') }}"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "DNS resolution failed: {{ '{{' }} $labels.instance {{ '}}' }}"
+          description: "DNS server {{ '{{' }} $labels.instance {{ '}}' }} is not resolving queries."
+
+{% elif item == 'service_alerts.yml' %}
+groups:
+  - name: systemd_services
+    rules:
+      - alert: SystemdServiceFailed
+        expr: node_systemd_unit_state{state="failed"} == 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Systemd service failed"
+          description: "{{ '{{' }} $labels.name {{ '}}' }} on {{ '{{' }} $labels.instance {{ '}}' }} is in failed state."
+
+      - alert: SystemdTimerFailed
+        expr: node_systemd_unit_state{name=~".*\\.timer", state="failed"} == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Systemd timer failed"
+          description: "Timer {{ '{{' }} $labels.name {{ '}}' }} on {{ '{{' }} $labels.instance {{ '}}' }} is in failed state."
+
+{% elif item == 'tls_alerts.yml' %}
+groups:
+  - name: tls_certificate_expiry
+    rules:
+      - alert: TLSCertExpiringSoon
+        expr: (probe_ssl_earliest_cert_expiry - time()) / 86400 < {{ tls_warning_days | default(14) }}
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "TLS certificate expiring within {{ tls_warning_days | default(14) }} days"
+          description: "Certificate for {{ '{{' }} $labels.instance {{ '}}' }} expires in {{ '{{' }} printf \"%.0f\" $value {{ '}}' }} days."
+
+      - alert: TLSCertExpiringCritical
+        expr: (probe_ssl_earliest_cert_expiry - time()) / 86400 < {{ tls_critical_days | default(7) }}
+        for: 1h
+        labels:
+          severity: critical
+        annotations:
+          summary: "TLS certificate expiring within {{ tls_critical_days | default(7) }} days"
+          description: "CRITICAL: Certificate for {{ '{{' }} $labels.instance {{ '}}' }} expires in {{ '{{' }} printf \"%.0f\" $value {{ '}}' }} days. Immediate action required."
+
+      - alert: TLSCertExpired
+        expr: (probe_ssl_earliest_cert_expiry - time()) < 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "TLS certificate has expired"
+          description: "Certificate for {{ '{{' }} $labels.instance {{ '}}' }} has EXPIRED."
+
+      - alert: TLSProbeFailure
+        expr: probe_success{job=~"tls_.*"} == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TLS probe failing"
+          description: "Blackbox TLS probe for {{ '{{' }} $labels.instance {{ '}}' }} has been failing for 10 minutes."
+
+      - alert: TLSHandshakeFailed
+        expr: probe_success{job="{{ https_probe_job | default('blackbox-https') }}"} == 0 and probe_http_ssl{job="{{ https_probe_job | default('blackbox-https') }}"} == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TLS handshake failing"
+          description: "HTTPS probe for {{ '{{' }} $labels.instance {{ '}}' }} is failing with TLS handshake errors for 10 minutes."
+{% endif %}
+{% endraw %}

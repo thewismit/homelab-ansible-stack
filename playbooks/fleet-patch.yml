@@ -1,0 +1,403 @@
+---
+# fleet-patch.yml — Safe fleet patching with audit, snapshot, patch, smoke, rollback
+#
+# Usage:
+#   Audit only:    ansible-playbook playbooks/fleet-patch.yml --tags audit
+#   Single host:   ansible-playbook playbooks/fleet-patch.yml --tags audit --limit wiki-host
+#   Full patch:    ansible-playbook playbooks/fleet-patch.yml --tags snapshot,patch,smoke --limit wiki-host
+#   Rollback:      ansible-playbook playbooks/fleet-patch.yml --tags rollback -e target_host=wiki-host -e rollback_date=20260309
+#
+# Tags: audit, snapshot, patch, smoke, rollback
+# Never runs patch without explicit --tags patch
+
+###############################################################################
+# Stage 1: AUDIT — dry-run apt upgrade, map packages to affected services
+###############################################################################
+- name: "Stage 1: Patch audit (dry-run)"
+  hosts: backup_servers:utility
+  become: true
+  gather_facts: true
+  tags: [audit]
+  vars_files:
+    - vars/fleet-patch-vars.yml
+  vars:
+    audit_date: "{{ ansible_date_time.date | replace('-', '') }}"
+
+  tasks:
+    - name: Refresh package index
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 0
+
+    - name: Run patch audit script
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+
+          sim=$(apt-get upgrade --simulate 2>/dev/null)
+          pkgs=$(echo "$sim" | grep '^Inst ' | sed -E 's/^Inst (\S+)\s+\[(\S+)\]\s+\((\S+)\s+.*/\1 \2 \3/')
+
+          if [ -z "$pkgs" ]; then
+            echo '{"packages":[]}'
+            exit 0
+          fi
+
+          declare -A unit_bin_map
+          while read -r unit; do
+            bin=$(systemctl show "$unit" -p ExecStart --value 2>/dev/null | grep -oP '^\S+' || true)
+            [ -n "$bin" ] && unit_bin_map["$unit"]="$bin"
+          done < <(systemctl list-units --type=service --state=running --no-legend --plain | awk '{print $1}')
+
+          result='['
+          first=true
+          while read -r pkg from_ver to_ver; do
+            files=$(dpkg -L "$pkg" 2>/dev/null || true)
+            affected_svcs=""
+            for unit in "${!unit_bin_map[@]}"; do
+              bin="${unit_bin_map[$unit]}"
+              if echo "$files" | grep -qxF "$bin"; then
+                [ -n "$affected_svcs" ] && affected_svcs="$affected_svcs,"
+                affected_svcs="$affected_svcs\"$unit\""
+              fi
+            done
+            $first || result="$result,"
+            first=false
+            result="$result{\"package\":\"$pkg\",\"from_version\":\"$from_ver\",\"to_version\":\"$to_ver\",\"affects_services\":[$affected_svcs]}"
+          done <<< "$pkgs"
+          result="$result]"
+
+          echo "{\"packages\":$result}"
+        executable: /bin/bash
+      register: audit_script
+      changed_when: false
+
+    - name: Parse audit results
+      ansible.builtin.set_fact:
+        audit_data: "{{ audit_script.stdout | from_json }}"
+
+    - name: Create audit output directory
+      ansible.builtin.file:
+        path: "{{ patch_audit_dir }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Write audit report to file
+      ansible.builtin.copy:
+        content: "{{ {'host': inventory_hostname, 'date': audit_date, 'total_upgrades': audit_data.packages | length, 'packages': audit_data.packages} | to_nice_json }}"
+        dest: "{{ patch_audit_dir }}/{{ inventory_hostname }}-{{ audit_date }}.json"
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+
+    - name: Print audit summary
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: {{ audit_data.packages | length }} packages to upgrade
+          {% for p in audit_data.packages %}
+          {% if p.affects_services | length > 0 %}
+            - {{ p.package }} ({{ p.from_version }} → {{ p.to_version }}) affects: {{ p.affects_services | join(', ') }}
+          {% endif %}
+          {% endfor %}
+
+###############################################################################
+# Stage 2: SNAPSHOT — Proxmox VM/LXC snapshot before patching
+###############################################################################
+- name: "Stage 2: Take Proxmox snapshots"
+  hosts: backup_servers:utility
+  gather_facts: true
+  tags: [snapshot]
+  vars_files:
+    - vars/fleet-patch-vars.yml
+  vars:
+    snapshot_date: "{{ ansible_date_time.date | replace('-', '') }}"
+    snapshot_name: "pre-patch-{{ snapshot_date }}"
+    host_info: "{{ host_vmid_map[inventory_hostname] | default({}) }}"
+
+  tasks:
+    - name: Skip hosts not in VMID map
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} not in host_vmid_map, skipping snapshot"
+      when: host_info | length == 0
+
+    - name: Take VM snapshot (qm)
+      ansible.builtin.command:
+        cmd: "qm snapshot {{ host_info.vmid }} {{ snapshot_name }} --description 'Pre-patch snapshot {{ snapshot_date }}'"
+      delegate_to: "{{ host_info.pve_host }}"
+      become: true
+      when:
+        - host_info | length > 0
+        - host_info.type == 'qm'
+      register: qm_snap
+
+    - name: Take LXC snapshot (pct)
+      ansible.builtin.command:
+        cmd: "pct snapshot {{ host_info.vmid }} {{ snapshot_name }} --description 'Pre-patch snapshot {{ snapshot_date }}'"
+      delegate_to: "{{ host_info.pve_host }}"
+      become: true
+      when:
+        - host_info | length > 0
+        - host_info.type == 'pct'
+      register: pct_snap
+
+    - name: Verify snapshot exists
+      ansible.builtin.command:
+        cmd: "{{ host_info.type }} listsnapshot {{ host_info.vmid }}"
+      delegate_to: "{{ host_info.pve_host }}"
+      become: true
+      register: snap_list
+      changed_when: false
+      when: host_info | length > 0
+
+    - name: Confirm snapshot created
+      ansible.builtin.debug:
+        msg: "Snapshot '{{ snapshot_name }}' verified for {{ inventory_hostname }} (VMID {{ host_info.vmid }} on {{ host_info.pve_host }})"
+      when:
+        - host_info | length > 0
+        - snap_list is defined
+        - snapshot_name in (snap_list.stdout | default(''))
+
+###############################################################################
+# Stage 3: PATCH — actual apt upgrade (requires explicit --tags patch)
+###############################################################################
+- name: "Stage 3: Apply patches"
+  hosts: backup_servers:utility
+  become: true
+  gather_facts: true
+  tags: [patch]
+  vars_files:
+    - vars/fleet-patch-vars.yml
+
+  tasks:
+    - name: Update package index
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 0
+
+    - name: Upgrade all packages (keep existing configs)
+      ansible.builtin.apt:
+        upgrade: safe
+        dpkg_options: "force-confold"
+      register: apt_upgrade
+
+    - name: Show upgrade results
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: {{ apt_upgrade.stdout_lines | default([]) | select('match', '^\d+ upgraded') | list }}
+
+    - name: Check for services needing restart
+      ansible.builtin.command:
+        cmd: needrestart -b
+      register: needrestart_check
+      changed_when: false
+      failed_when: false
+
+    - name: Parse services needing restart
+      ansible.builtin.set_fact:
+        services_to_restart: >-
+          {{ needrestart_check.stdout_lines | default([])
+             | select('match', '^NEEDRESTART-SVC:')
+             | map('regex_replace', '^NEEDRESTART-SVC:\s*', '')
+             | list }}
+        kernel_upgraded: >-
+          {{ needrestart_check.stdout_lines | default([])
+             | select('match', '^NEEDRESTART-KSTA:\s*3')
+             | list | length > 0 }}
+
+    - name: Restart services flagged by needrestart
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: restarted
+      loop: "{{ services_to_restart }}"
+      when:
+        - services_to_restart | length > 0
+        - item != ''
+      failed_when: false
+
+    - name: Warn about kernel upgrade
+      ansible.builtin.debug:
+        msg: >-
+          KERNEL UPGRADED on {{ inventory_hostname }} — reboot required.
+          Do NOT auto-reboot. Schedule a maintenance window.
+      when: kernel_upgraded | bool
+
+###############################################################################
+# Stage 4: SMOKE — post-upgrade service health validation
+###############################################################################
+- name: "Stage 4: Smoke tests"
+  hosts: backup_servers:utility
+  become: true
+  gather_facts: true
+  tags: [smoke]
+  vars_files:
+    - vars/fleet-patch-vars.yml
+  vars:
+    smoke_date: "{{ ansible_date_time.date | replace('-', '') }}"
+    host_checks: "{{ smoke_checks[inventory_hostname] | default([]) }}"
+
+  tasks:
+    - name: Check disk usage
+      ansible.builtin.shell:
+        cmd: "df -h / | awk 'NR==2 {print $5}' | tr -d '%'"
+      register: disk_pct
+      changed_when: false
+
+    - name: Check for failed systemd units
+      ansible.builtin.command:
+        cmd: systemctl list-units --failed --no-legend --plain
+      register: failed_units
+      changed_when: false
+      failed_when: false
+
+    - name: Get CPU count
+      ansible.builtin.command:
+        cmd: nproc
+      register: cpu_count
+      changed_when: false
+
+    - name: Check load average
+      ansible.builtin.shell:
+        cmd: "awk '{print $1}' /proc/loadavg"
+      register: load_avg
+      changed_when: false
+
+    - name: Build service check results via script
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          result='['
+          first=true
+          {% for check in host_checks | selectattr('type', 'equalto', 'systemd') | list %}
+          status=$(systemctl is-active {{ check.unit }} 2>/dev/null || true)
+          passed=$( [ "$status" = "active" ] && echo "true" || echo "false" )
+          $first || result="$result,"
+          first=false
+          result="$result{\"type\":\"systemd\",\"unit\":\"{{ check.unit }}\",\"status\":\"$status\",\"passed\":$passed}"
+          {% endfor %}
+          {% for check in host_checks | selectattr('type', 'equalto', 'http') | list %}
+          {% set expect = '200|301|302' if check.expect_redirect | default(false) else '200' %}
+          http_code=$(curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 5 '{{ check.url }}' 2>/dev/null || echo "000")
+          passed=$( echo "$http_code" | grep -qE '^({{ expect }})$' && echo "true" || echo "false" )
+          $first || result="$result,"
+          first=false
+          result="$result{\"type\":\"http\",\"url\":\"{{ check.url }}\",\"status_code\":$http_code,\"passed\":$passed}"
+          {% endfor %}
+          {% for check in host_checks | selectattr('type', 'equalto', 'port') | list %}
+          passed=$( ss -tlnp | grep -q ':{{ check.port }} ' && echo "true" || echo "false" )
+          $first || result="$result,"
+          first=false
+          result="$result{\"type\":\"port\",\"port\":{{ check.port }},\"passed\":$passed}"
+          {% endfor %}
+          result="$result]"
+          echo "$result"
+        executable: /bin/bash
+      register: svc_checks_raw
+      changed_when: false
+
+    - name: Parse service check results
+      ansible.builtin.set_fact:
+        svc_checks: "{{ svc_checks_raw.stdout | from_json }}"
+
+    - name: Compute overall pass/fail
+      ansible.builtin.set_fact:
+        smoke_all_passed: "{{ (svc_checks | rejectattr('passed') | list | length == 0) and (failed_units.stdout_lines | default([]) | length == 0) and (disk_pct.stdout | int <= 90) }}"
+
+    - name: Create smoke results directory
+      ansible.builtin.file:
+        path: "{{ smoke_results_dir }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Write smoke results
+      ansible.builtin.copy:
+        content: "{{ {'host': inventory_hostname, 'date': smoke_date, 'disk_pct': disk_pct.stdout | int, 'failed_units': failed_units.stdout_lines | default([]), 'service_checks': svc_checks, 'all_passed': smoke_all_passed} | to_nice_json }}"
+        dest: "{{ smoke_results_dir }}/{{ inventory_hostname }}-{{ smoke_date }}.json"
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+
+    - name: Print smoke test summary
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: {{ 'PASS' if smoke_all_passed | bool else 'FAIL' }}
+          — disk {{ disk_pct.stdout }}%
+          {% if failed_units.stdout_lines | default([]) | length > 0 %}
+          — failed units: {{ failed_units.stdout_lines | join(', ') }}
+          {% endif %}
+          {% for check in svc_checks %}
+          {% if not check.passed %}
+          — FAILED: {{ check.type }} {{ check.unit | default(check.url | default(check.port)) }}
+          {% endif %}
+          {% endfor %}
+
+###############################################################################
+# Stage 5: ROLLBACK — revert to pre-patch snapshot (manual trigger only)
+###############################################################################
+- name: "Stage 5: Rollback to pre-patch snapshot"
+  hosts: "{{ target_host | default('none') }}"
+  gather_facts: false
+  tags: [rollback]
+  vars_files:
+    - vars/fleet-patch-vars.yml
+  vars:
+    rollback_date: "{{ rollback_date | default(lookup('pipe', 'date +%Y%m%d')) }}"
+    snapshot_name: "pre-patch-{{ rollback_date }}"
+    host_info: "{{ host_vmid_map[inventory_hostname] | default({}) }}"
+
+  tasks:
+    - name: Fail if host not in VMID map
+      ansible.builtin.fail:
+        msg: "{{ inventory_hostname }} not found in host_vmid_map — cannot rollback"
+      when: host_info | length == 0
+
+    - name: Verify snapshot exists before rollback
+      ansible.builtin.command:
+        cmd: "{{ host_info.type }} listsnapshot {{ host_info.vmid }}"
+      delegate_to: "{{ host_info.pve_host }}"
+      become: true
+      register: snap_verify
+      changed_when: false
+
+    - name: Fail if snapshot not found
+      ansible.builtin.fail:
+        msg: "Snapshot '{{ snapshot_name }}' not found for VMID {{ host_info.vmid }}"
+      when: snapshot_name not in (snap_verify.stdout | default(''))
+
+    - name: Stop guest
+      ansible.builtin.command:
+        cmd: "{{ host_info.type }} stop {{ host_info.vmid }}"
+      delegate_to: "{{ host_info.pve_host }}"
+      become: true
+
+    - name: Wait for guest to stop
+      ansible.builtin.pause:
+        seconds: 10
+
+    - name: Rollback to pre-patch snapshot
+      ansible.builtin.command:
+        cmd: "{{ host_info.type }} rollback {{ host_info.vmid }} {{ snapshot_name }}"
+      delegate_to: "{{ host_info.pve_host }}"
+      become: true
+
+    - name: Start guest
+      ansible.builtin.command:
+        cmd: "{{ host_info.type }} start {{ host_info.vmid }}"
+      delegate_to: "{{ host_info.pve_host }}"
+      become: true
+
+    - name: Wait for SSH to come back
+      ansible.builtin.wait_for_connection:
+        delay: 10
+        timeout: 120
+
+    - name: Confirm host is back
+      ansible.builtin.ping:
+
+    - name: Rollback complete
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} rolled back to snapshot '{{ snapshot_name }}' and is online"

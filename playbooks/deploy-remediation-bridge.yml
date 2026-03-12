@@ -264,28 +264,105 @@
           # playbook: path relative to ansible_dir
           # cooldown_minutes: min time between re-runs of the same alert+host combo
           # extra_vars: additional vars passed to the playbook (optional)
+          # label_vars: map playbook var names to Prometheus label names (optional)
+          # strategy: defer_to_timer — skip remediation, let systemd timer retry (optional)
 
           mappings:
 
-            # Container exited / not running
+            # Disk < 20% free (warning)
+            DiskSpaceWarning:
+              playbook: remediation/cleanup-disk.yml
+              cooldown_minutes: 60
+
+            # Disk < 10% free (critical)
+            DiskSpaceCritical:
+              playbook: remediation/cleanup-disk.yml
+              cooldown_minutes: 30
+
+            # Memory > 90%
+            HighMemoryUsage:
+              playbook: remediation/service-restart.yml
+              cooldown_minutes: 30
+
+            # TLS cert expiring within 14 days
+            TLSCertExpiringSoon:
+              playbook: remediation/caddy-reload.yml
+              cooldown_minutes: 360
+
+            # TLS cert expiring within 7 days (critical)
+            TLSCertExpiringCritical:
+              playbook: remediation/caddy-reload.yml
+              cooldown_minutes: 120
+
+            # TLS cert has expired
+            TLSCertExpired:
+              playbook: remediation/caddy-reload.yml
+              cooldown_minutes: 60
+
+            # Container exited / crashed
             ContainerDown:
               playbook: remediation/restart-container.yml
               cooldown_minutes: 10
-
-            # Disk > 85%
-            DiskSpaceHigh:
-              playbook: remediation/cleanup-disk.yml
-              cooldown_minutes: 60
 
             # Systemd service failed
             SystemdServiceFailed:
               playbook: remediation/service-restart.yml
               cooldown_minutes: 15
+              label_vars:
+                service_name: name
 
-            # Caddy cert expiry < 7 days (should auto-renew, but just in case)
-            TLSCertExpiringSoon:
+            # Container OOM killed
+            ContainerOOM:
+              playbook: remediation/restart-container.yml
+              cooldown_minutes: 15
+
+            # NFS mount dropped
+            NFSMountUnavailable:
+              playbook: remediation/remount-nfs.yml
+              cooldown_minutes: 30
+
+            # Restic backup failed — defer to timer retry
+            ResticBackupFailed:
+              strategy: defer_to_timer
+              cooldown_minutes: 60
+
+            # Restic backup timer stale
+            ResticBackupStale:
+              playbook: remediation/service-restart.yml
+              cooldown_minutes: 120
+              extra_vars:
+                service_name: restic-backup.timer
+
+            # DNS resolution failed
+            DNSResolutionFailed:
+              playbook: remediation/service-restart.yml
+              cooldown_minutes: 30
+              extra_vars:
+                service_name: named.service
+
+            # Systemd timer failed
+            SystemdTimerFailed:
+              playbook: remediation/service-restart.yml
+              cooldown_minutes: 30
+              label_vars:
+                service_name: name
+
+            # Host unreachable — attempt VM/LXC start via Proxmox
+            HostDown:
+              playbook: remediation/host-recovery.yml
+              cooldown_minutes: 30
+
+            # TLS handshake failing
+            TLSHandshakeFailed:
               playbook: remediation/caddy-reload.yml
-              cooldown_minutes: 360
+              cooldown_minutes: 120
+
+            # Expected service enabled but not running
+            EnabledServiceInactive:
+              playbook: remediation/service-restart.yml
+              cooldown_minutes: 30
+              label_vars:
+                service_name: name
       notify: Restart remediation-bridge
 
     # -------------------------------------------------------------------------

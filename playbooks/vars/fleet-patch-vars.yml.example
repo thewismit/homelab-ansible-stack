@@ -1,0 +1,23 @@
+---
+# fleet-patch-vars.yml — Host VMID mapping and smoke test definitions
+# Used by: playbooks/fleet-patch.yml
+# Copy this file to fleet-patch-vars.yml and fill in your host details.
+
+# Map each managed host to its Proxmox VMID, type (qm=VM, pct=LXC), and PVE host
+host_vmid_map:
+  # example-host:
+  #   vmid: 100
+  #   type: qm        # qm for VM, pct for LXC
+  #   pve_host: proxmox-host  # inventory hostname of Proxmox node
+
+# Per-host smoke tests — run after patching to verify services are healthy
+# Supported types: systemd (unit name), http (URL), port (number)
+smoke_checks:
+  # example-host:
+  #   - {type: systemd, unit: docker}
+  #   - {type: http, url: "http://localhost:3000/health"}
+  #   - {type: port, port: 8080}
+
+# Audit/smoke result directories (on control node)
+patch_audit_dir: /tmp/fleet-patch/audit
+smoke_results_dir: /tmp/fleet-patch/smoke

@@ -36,15 +36,19 @@ Prometheus ──alerts──▶ Alertmanager ──webhook──▶ Remediation
 | **Loki** | Log aggregation backend (Docker Compose, NFS storage) | `deploy-loki.yml` |
 | **Promtail** | Log shipper on every host → Loki | `deploy-promtail-fleet.yml` |
 | **Remediation bridge** | Alertmanager → Ansible auto-remediation | `deploy-remediation-bridge.yml` |
+| **Alert rules** | 23 Prometheus alert rules (parameterized) | `deploy-alert-rules.yml` |
+| **Fleet patching** | 5-stage safe patching pipeline (audit→snapshot→patch→smoke→rollback) | `fleet-patch.yml` |
 
-**4 targeted remediation playbooks** — called automatically by the bridge or manually:
+**6 targeted remediation playbooks** — called automatically by the bridge or manually:
 
 | Playbook | When it runs |
 |---------|-------------|
-| `remediation/restart-container.yml` | `ContainerDown` alert |
-| `remediation/service-restart.yml` | `SystemdServiceFailed` alert |
-| `remediation/cleanup-disk.yml` | `DiskSpaceHigh` alert |
-| `remediation/caddy-reload.yml` | `TLSCertExpiringSoon` alert |
+| `remediation/restart-container.yml` | `ContainerDown`, `ContainerOOM` alerts |
+| `remediation/service-restart.yml` | `SystemdServiceFailed`, `HighMemoryUsage`, `DNSResolutionFailed` alerts |
+| `remediation/cleanup-disk.yml` | `DiskSpaceWarning`, `DiskSpaceCritical` alerts |
+| `remediation/caddy-reload.yml` | `TLSCertExpiringSoon/Critical/Expired`, `TLSHandshakeFailed` alerts |
+| `remediation/host-recovery.yml` | `HostDown` alert — Proxmox VM/LXC auto-recovery |
+| `remediation/remount-nfs.yml` | `NFSMountUnavailable` alert — NFS mount recovery |
 
 ---
 
@@ -182,6 +186,7 @@ Secrets go in `group_vars/all/vault.yml` (see `vault.yml.example` for all requir
 | `roles/common` | Passwordless sudo for ansible_user | [README](roles/common/README.md) |
 | `roles/restic` | Restic install, repo init, backup + prune | [README](roles/restic/README.md) |
 | `roles/restic_backup` | Systemd timer/service units for scheduled backups | [README](roles/restic_backup/README.md) |
+| `roles/server_hardening` | SSH hardening, UFW firewall, sysctl tuning | [README](roles/server_hardening/README.md) |
 
 ---
 
@@ -212,6 +217,55 @@ See [`playbooks/REMEDIATION-BRIDGE.md`](playbooks/REMEDIATION-BRIDGE.md) for:
 - How to add a new remediation mapping
 - Cooldown behavior and ntfy notifications
 - Monitoring the bridge service
+
+---
+
+## Alert rules
+
+23 Prometheus alert rules across 7 categories, all parameterized via `group_vars`:
+
+| Category | Alerts |
+|----------|--------|
+| **Host health** | `HostDown`, `DiskSpaceWarning`, `DiskSpaceCritical`, `HighMemoryUsage`, `EnabledServiceInactive` |
+| **Container** | `ContainerDown`, `ContainerOOM`, `ContainerRestartLoop` |
+| **TLS** | `TLSCertExpiringSoon`, `TLSCertExpiringCritical`, `TLSCertExpired`, `TLSProbeFailure`, `TLSHandshakeFailed` |
+| **Backup** | `ResticBackupStale`, `ResticBackupFailed` |
+| **Infrastructure** | `NFSMountUnavailable`, `HighSwapUsage`, `HighLoadAverage`, `HighDiskIOWait` |
+| **Network** | `HTTPEndpointDown`, `DNSResolutionFailed` |
+| **Services** | `SystemdServiceFailed`, `SystemdTimerFailed` |
+
+Deploy:
+```bash
+ansible-playbook playbooks/deploy-alert-rules.yml --check --limit docker-host
+ansible-playbook playbooks/deploy-alert-rules.yml --limit docker-host
+```
+
+---
+
+## Fleet patching
+
+5-stage safe patching pipeline. Each stage is tag-gated — nothing runs unless you explicitly ask for it.
+
+| Stage | Tag | What it does |
+|-------|-----|-------------|
+| **Audit** | `audit` | Dry-run `apt upgrade`, map packages to running services |
+| **Snapshot** | `snapshot` | Proxmox VM/LXC snapshot before patching |
+| **Patch** | `patch` | `apt safe` upgrade + automatic service restarts |
+| **Smoke** | `smoke` | Post-patch service health validation |
+| **Rollback** | `rollback` | Revert to pre-patch Proxmox snapshot |
+
+```bash
+# Audit all hosts
+ansible-playbook playbooks/fleet-patch.yml --tags audit
+
+# Full patch cycle on one host
+ansible-playbook playbooks/fleet-patch.yml --tags snapshot,patch,smoke --limit wiki-host
+
+# Rollback if something broke
+ansible-playbook playbooks/fleet-patch.yml --tags rollback -e target_host=wiki-host -e rollback_date=20260312
+```
+
+Requires `playbooks/vars/fleet-patch-vars.yml` — see `fleet-patch-vars.yml.example`.
 
 ---
 
